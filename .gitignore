@@ -1,0 +1,31 @@
+# Generated work directories and outputs
+pages/
+text/
+prompts/
+translated_pages_raw/
+translated_pages/
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.webp
+manifest.json
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local secrets and environment
+.env
+*.env
+*.key
+*.pem
+auth.json
+config.json
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

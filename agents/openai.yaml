@@ -1,0 +1,6 @@
+interface:
+  display_name: "PDF Chinese Image Translator"
+  short_description: "Translate English PDFs into Chinese visual PDFs."
+  default_prompt: "Use $pdf-zh-image-translator to translate this English PDF into a Chinese PDF while preserving the original visual layout."
+policy:
+  allow_implicit_invocation: true
