@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render selected PDF pages and prepare imagegen page prompts."""
+"""Render selected PDF pages and prepare gpt-image page prompts."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
         "--max-prompt-text-chars",
         type=int,
         default=9000,
-        help="Maximum extracted text characters embedded in each imagegen prompt",
+        help="Fallback maximum extracted text characters embedded in each gpt-image prompt",
     )
     return parser.parse_args()
 
@@ -145,25 +145,83 @@ def image_size(path: Path) -> tuple[int, int]:
         return image.size
 
 
-def prompt_for_page(page_number: int, blocks: list[dict], max_chars: int) -> str:
+def classify_page(blocks: list[dict]) -> str:
+    text = "\n".join(str(block.get("text", "")) for block in blocks).lower()
+    line_count = sum(len(str(block.get("text", "")).splitlines()) for block in blocks)
+    if any(term in text for term in ("table of contents", "contents", "index")):
+        return "toc"
+    if line_count >= 35 or any(term in text for term in ("part number", "item", "qty", "quantity", "model #")):
+        return "table_dense"
+    return "general"
+
+
+def prompt_limit_for_page(page_type: str, fallback_limit: int) -> int:
+    limits = {
+        "toc": 2500,
+        "table_dense": 1500,
+        "general": 4000,
+    }
+    return min(fallback_limit, limits.get(page_type, fallback_limit))
+
+
+def block_priority(block: dict, page_type: str) -> tuple[int, int]:
+    text = str(block.get("text", ""))
+    lowered = text.lower()
+    bbox = block.get("bbox_px") or [0, 0, 0, 0]
+    y0 = bbox[1] if isinstance(bbox, list) and len(bbox) > 1 else 0
+    priority = 5
+    if len(text) < 90:
+        priority -= 2
+    if any(term in lowered for term in ("warning", "caution", "safety", "danger", "intended use")):
+        priority -= 2
+    if page_type == "table_dense" and any(term in lowered for term in ("part", "item", "qty", "description", "model")):
+        priority -= 2
+    if page_type == "toc" and any(ch.isdigit() for ch in text):
+        priority -= 1
+    return (priority, y0)
+
+
+def selected_blocks_for_prompt(blocks: list[dict], page_type: str, max_chars: int) -> tuple[list[str], int]:
     block_lines = []
     used = 0
-    for idx, block in enumerate(blocks, start=1):
+    ordered = list(enumerate(blocks, start=1))
+    if page_type in {"toc", "table_dense"}:
+        ordered = sorted(ordered, key=lambda item: block_priority(item[1], page_type))
+
+    selected_indexes = set()
+    for idx, block in ordered:
         text = block["text"]
         bbox = block.get("bbox_px")
         line = f"{idx}. bbox_px={bbox} text={text}"
         if used + len(line) > max_chars:
-            remaining = len(blocks) - idx + 1
-            block_lines.append(f"... {remaining} additional text blocks omitted; inspect text/page-{page_number:03d}.json if needed.")
             break
         block_lines.append(line)
+        selected_indexes.add(idx)
         used += len(line)
+    omitted = len(blocks) - len(selected_indexes)
+    return block_lines, omitted
+
+
+def prompt_for_page(page_number: int, blocks: list[dict], max_chars: int) -> tuple[str, str]:
+    page_type = classify_page(blocks)
+    prompt_limit = prompt_limit_for_page(page_type, max_chars)
+    block_lines, omitted = selected_blocks_for_prompt(blocks, page_type, prompt_limit)
+    if omitted:
+        block_lines.append(
+            f"... {omitted} additional text blocks omitted; inspect text/page-{page_number:03d}.json if needed."
+        )
 
     extracted = "\n".join(block_lines) if block_lines else "(No embedded text was extracted. Translate visible page text from the image.)"
-    return f"""Use case: text-localization
+    type_guidance = {
+        "toc": "Page type: table of contents / section list. Preserve hierarchy, dot leaders, spacing, and page numbers.",
+        "table_dense": "Page type: dense table / parts list. Preserve column order, row order, item codes, units, and numeric values; use compact Chinese labels.",
+        "general": "Page type: general page. Preserve headings, captions, figures, callouts, footers, and page furniture.",
+    }[page_type]
+    prompt = f"""Use case: text-localization
 Asset type: translated PDF page raster
 Primary request: Translate all visible English text on PDF page {page_number} into accurate Simplified Chinese.
 Input image: the displayed page image is the edit target.
+{type_guidance}
 Source-of-truth text extracted from the PDF:
 {extracted}
 
@@ -175,6 +233,7 @@ Constraints:
 - Keep all non-text visual content unchanged.
 Avoid: blurry text, garbled Chinese characters, invented data, altered charts, changed images, missing headers/footers, or leaving obvious English text untranslated.
 """
+    return prompt, page_type
 
 
 def main() -> int:
@@ -229,8 +288,10 @@ def main() -> int:
                 "text_blocks": blocks,
                 "text_preview": shorten(" ".join(block["text"] for block in blocks), width=500, placeholder=" ..."),
             }
+            prompt, page_type = prompt_for_page(page_number, blocks, args.max_prompt_text_chars)
+            text_payload["page_type"] = page_type
             text_path.write_text(json.dumps(text_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            prompt_path.write_text(prompt_for_page(page_number, blocks, args.max_prompt_text_chars), encoding="utf-8")
+            prompt_path.write_text(prompt, encoding="utf-8")
 
             manifest_pages.append(
                 {
@@ -244,6 +305,7 @@ def main() -> int:
                     "prompt_path": str(prompt_path),
                     "expected_translated_image_path": str(translated_dir / f"page-{page_number:03d}.png"),
                     "text_block_count": len(blocks),
+                    "page_type": page_type,
                 }
             )
     else:
@@ -273,8 +335,10 @@ def main() -> int:
                 "text_preview": shorten(" ".join(block["text"] for block in blocks), width=500, placeholder=" ..."),
                 "renderer": "swift-pdfkit-fallback",
             }
+            prompt, page_type = prompt_for_page(page_number, blocks, args.max_prompt_text_chars)
+            text_payload["page_type"] = page_type
             text_path.write_text(json.dumps(text_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            prompt_path.write_text(prompt_for_page(page_number, blocks, args.max_prompt_text_chars), encoding="utf-8")
+            prompt_path.write_text(prompt, encoding="utf-8")
             manifest_pages.append(
                 {
                     "page_number": page_number,
@@ -288,6 +352,7 @@ def main() -> int:
                     "expected_translated_image_path": str(translated_dir / f"page-{page_number:03d}.png"),
                     "text_block_count": len(blocks),
                     "renderer": "swift-pdfkit-fallback",
+                    "page_type": page_type,
                 }
             )
 
@@ -312,7 +377,7 @@ def main() -> int:
     print(f"Prepared {len(manifest_pages)} page(s)")
     print(f"Manifest: {manifest_path}")
     print(f"Rendered pages: {pages_dir}")
-    print(f"Imagegen prompts: {prompt_dir}")
+    print(f"gpt-image prompts: {prompt_dir}")
     print(f"Translated output target: {translated_dir}")
     return 0
 
