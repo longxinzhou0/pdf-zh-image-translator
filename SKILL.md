@@ -1,27 +1,27 @@
 ---
 name: pdf-zh-image-translator
-description: Translate English PDF files into Simplified Chinese visual PDFs by rendering pages to images, regenerating each page with imagegen, normalizing page dimensions, and merging the results back into a PDF. Use when Codex receives an English PDF and the user asks for a Chinese PDF version, page-image translation, PDF localization, or a translated PDF assembled from whole-page image edits.
+description: Translate English PDF files into Simplified Chinese visual PDFs by rendering pages to images, regenerating each page with gpt-image, normalizing page dimensions, and merging the results back into a PDF. Use when Codex receives an English PDF and the user asks for a Chinese PDF version, page-image translation, PDF localization, or a translated PDF assembled from whole-page image edits.
 ---
 
 # PDF Chinese Image Translator
 
 ## Core idea
 
-Use a whole-page raster workflow. Render each selected PDF page to an image, use `$imagegen` in `text-localization` edit mode to regenerate the entire page as a clean Simplified Chinese page image, normalize the generated page image back to the original rendered page dimensions, then merge the normalized page images into one PDF. Keep the original PDF untouched.
+Use a whole-page raster workflow. Render each selected PDF page to an image, use `$gpt-image` in `text-localization` edit mode to regenerate the entire page as a clean Simplified Chinese page image, normalize the generated page image back to the original rendered page dimensions, then merge the normalized page images into one PDF. Keep the original PDF untouched.
 
-This skill depends on `$imagegen` for the visual translation/edit pass. The bundled scripts handle deterministic preparation, page manifests, PDF assembly, and audits; they do not call imagegen themselves.
+This skill depends on `$gpt-image` for the visual translation/edit pass. The bundled scripts handle deterministic preparation, page manifests, batch invocation of the existing `gpt-image` launcher, PDF assembly, contact-sheet QA, and audits.
 
-Important distinction: the render step is required PDF plumbing, not the translation style. `imagegen` cannot directly edit a multi-page PDF, so every run must first render PDF pages into full-page images and later normalize/merge the generated images. Do not describe or use region overlay / paint-over text replacement as the default workflow.
+Important distinction: the render step is required PDF plumbing, not the translation style. `gpt-image` cannot directly edit a multi-page PDF, so every run must first render PDF pages into full-page images and later normalize/merge the generated images. Do not describe or use region overlay / paint-over text replacement as the default workflow.
 
-Do not substitute another PDF translation pipeline for the imagegen pass. In particular, do not use `pdf2zh`, Google Translate, Gemini, DeepLX bridges, Ollama, or other text-translation/layout tools to produce the deliverable unless the user explicitly asks to compare against a non-imagegen pipeline. The deliverable for this skill is generated page images from whole-page imagegen, followed by deterministic dimension normalization and PDF binding.
+Do not substitute another PDF translation pipeline for the `gpt-image` pass. In particular, do not use `pdf2zh`, Google Translate, Gemini, DeepLX bridges, Ollama, or other text-translation/layout tools to produce the deliverable unless the user explicitly asks to compare against a non-gpt-image pipeline. The deliverable for this skill is generated page images from whole-page `gpt-image`, followed by deterministic dimension normalization and PDF binding.
 
 Do not call external AI tools for OCR or translation support either. Avoid shelling out to `gemini`, `ask-gemini`, `ollama`, translation CLIs, hosted translation APIs, or ad hoc AI bridge servers to create page copy. ChatGPT/Codex already has enough multimodal OCR and translation ability for prompt support. Allowed AI components are limited to:
 
 - the current Codex/ChatGPT model reading rendered page images and drafting page-level OCR/translation support;
 - Codex child agents, when the user has authorized subagents, for parallel page OCR/translation support;
-- the built-in `$imagegen` skill for the final whole-page Chinese page image generation.
+- the `$gpt-image` skill for the final whole-page Chinese page image generation.
 
-Child agents are not an alternate toolchain. They may only inspect assigned rendered page images and return page-level support text for the main agent to put into the imagegen prompt. They must not call Gemini, Ollama, pdf2zh, DeepLX, Google Translate, or any other external AI/OCR/translation service.
+Child agents are not an alternate toolchain. They may only inspect assigned rendered page images and return page-level support text for the main agent to put into the `gpt-image` prompt. They must not call Gemini, Ollama, pdf2zh, DeepLX, Google Translate, or any other external AI/OCR/translation service.
 
 ## Flow At A Glance
 
@@ -31,7 +31,7 @@ Child agents are not an alternate toolchain. They may only inspect assigned rend
    - Review pass: translate a few representative pages first.
 2. Render the selected pages to PNG.
 3. Read each page image and draft a page prompt from the image plus extracted text.
-4. Run whole-page `imagegen` on each page.
+4. Run whole-page `gpt-image` on each page.
 5. Normalize the generated pages back to the source render size.
 6. Merge the normalized pages into the translated-only PDF.
 7. Build a bilingual comparison PDF by placing each original page image and the matching translated page image on the same PDF page.
@@ -94,7 +94,7 @@ Child agents are not an alternate toolchain. They may only inspect assigned rend
   - `bilingual-comparison.pdf`: original English page and translated Chinese page combined onto the same page for side-by-side comparison.
 - In the bilingual comparison PDF, pair pages by the same `page-NNN` number.
 - Preserve the page order from `manifest.json`.
-- Do not build the bilingual comparison from raw imagegen outputs; use normalized translated pages so dimensions are stable.
+- Do not build the bilingual comparison from raw `gpt-image` outputs; use normalized translated pages so dimensions are stable.
 - If any original or translated page image is missing, fail the bilingual build and report the missing page.
 
 ## Workflow
@@ -114,8 +114,25 @@ Child agents are not an alternate toolchain. They may only inspect assigned rend
      --end-page 5 \
      --dpi 200
    ```
-4. For each prepared page, inspect `pages/page-NNN.png` with `view_image`, then invoke `$imagegen` built-in edit mode using the corresponding `prompts/page-NNN.txt`.
-5. Save each final whole-page imagegen output as `translated_pages_raw/page-NNN.png`. Use exactly the same page number in the filename. Do not overwrite original rendered pages.
+4. Run a preflight for the image endpoint and `gpt-image` launcher:
+   ```bash
+   SKILL_DIR="/path/to/pdf-zh-image-translator"
+   python "$SKILL_DIR/scripts/run_gpt_image_pages.py" \
+     --workdir "/path/to/workdir" \
+     --model gpt-image-2 \
+     --base-url "https://img.proxy2it.com/v1" \
+     --preflight-only
+   ```
+5. Batch-run whole-page `gpt-image` edits. The runner calls the installed `$gpt-image` skill launcher and saves raw outputs as `translated_pages_raw/page-NNN.png`. It skips existing raw outputs unless `--force` is provided, so interrupted runs can resume:
+   ```bash
+   SKILL_DIR="/path/to/pdf-zh-image-translator"
+   python "$SKILL_DIR/scripts/run_gpt_image_pages.py" \
+     --workdir "/path/to/workdir" \
+     --model gpt-image-2 \
+     --base-url "https://img.proxy2it.com/v1" \
+     --quality high
+   ```
+   By default, the runner passes a literal `--size` matching each rendered source page, rounded to valid API dimensions, so the raw `gpt-image` output starts close to the original aspect ratio before normalization. To run only a page range, add `--start-page N --end-page M`. To retry pages that already have raw outputs, add `--force`.
 6. Normalize the generated page images back to the manifest dimensions:
    ```bash
    SKILL_DIR="/path/to/pdf-zh-image-translator"
@@ -124,7 +141,15 @@ Child agents are not an alternate toolchain. They may only inspect assigned rend
      --manifest "/path/to/workdir/manifest.json" \
      --out-dir "/path/to/workdir/translated_pages"
    ```
-7. Merge normalized translated page images into the Chinese-only PDF:
+7. Create a contact sheet for quick visual QA:
+   ```bash
+   SKILL_DIR="/path/to/pdf-zh-image-translator"
+   python "$SKILL_DIR/scripts/make_contact_sheet.py" \
+     --image-dir "/path/to/workdir/translated_pages" \
+     --manifest "/path/to/workdir/manifest.json" \
+     --out "/path/to/workdir/qa-contact-sheet.png"
+   ```
+8. Merge normalized translated page images into the Chinese-only PDF:
    ```bash
    SKILL_DIR="/path/to/pdf-zh-image-translator"
    python "$SKILL_DIR/scripts/merge_page_images_to_pdf.py" \
@@ -133,7 +158,7 @@ Child agents are not an alternate toolchain. They may only inspect assigned rend
      --out "/path/to/workdir/translated.pdf" \
      --dpi 200
    ```
-8. Build the bilingual comparison PDF:
+9. Build the bilingual comparison PDF:
    ```bash
    SKILL_DIR="/path/to/pdf-zh-image-translator"
    python "$SKILL_DIR/scripts/build_bilingual_comparison_pdf.py" \
@@ -143,7 +168,7 @@ Child agents are not an alternate toolchain. They may only inspect assigned rend
      --out "/path/to/workdir/bilingual-comparison.pdf" \
      --dpi 200
    ```
-9. Audit the package:
+10. Audit the package:
    ```bash
    SKILL_DIR="/path/to/pdf-zh-image-translator"
    python "$SKILL_DIR/scripts/audit_translation_package.py" \
@@ -153,9 +178,19 @@ Child agents are not an alternate toolchain. They may only inspect assigned rend
      --bilingual-pdf "/path/to/workdir/bilingual-comparison.pdf"
    ```
 
-## Imagegen Pass
+## gpt-image Pass
 
 Use the page image as a whole-page edit target, not as loose inspiration and not as a region-painting task. Keep the prompt strict and short enough that the page text remains the source of truth:
+
+Default execution settings:
+
+- Use model `gpt-image-2` unless the user explicitly requests another image model.
+- For the user's proxy image API, set `OPENAI_BASE_URL=https://img.proxy2it.com/v1`; do not use the general chat/API base URL for image generation or image edits when the proxy returns a dedicated image endpoint.
+- Use edit mode with the rendered page image as `--image` / reference input, not text-to-image generation.
+- Use `quality=high` for final PDF pages with Chinese text, dense warnings, tables, figures, or small labels.
+- Use a page-matched literal image size by default. Do not let text-heavy PDF pages fall back to the square `1024x1024` CLI default unless the user explicitly asks for a draft.
+- Save raw generated page images to `translated_pages_raw/page-NNN.png`; run dimension normalization before PDF binding.
+- Prefer `scripts/run_gpt_image_pages.py` for normal runs. It invokes the existing `$gpt-image` launcher, exports the image endpoint through `OPENAI_BASE_URL`, writes `gpt_image_run_log.jsonl`, and supports resume-by-skip.
 
 ```text
 Use case: text-localization
@@ -167,7 +202,7 @@ Constraints: preserve original composition, backgrounds, photos, charts, line ar
 Avoid: overlay rectangles, painted fill boxes, smudged patches, blurry text, invented data, altered charts, changed photos, missing footers, extra commentary, mixed English/Chinese where a clean Chinese translation is possible.
 ```
 
-Always try a whole-page imagegen pass first and treat it as the preferred output style. If the generated page changes pixel dimensions, do not repair it with painted regions; run `normalize_page_images.py` to scale the whole page back to the original dimensions before merging.
+Always try a whole-page `gpt-image` pass first and treat it as the preferred output style. If the generated page changes pixel dimensions, do not repair it with painted regions; run `normalize_page_images.py` to scale the whole page back to the original dimensions before merging.
 
 For dense pages:
 
@@ -177,7 +212,7 @@ For dense pages:
 - If a page garbles on the first try, retry once with a shorter source-text section and a stricter prompt.
 - If it still garbles, mark the page for manual retry instead of switching workflows.
 
-If structured PDF text extraction returns zero blocks, do not switch tools. Use the rendered page image as the primary source, and optionally add plain text, word-mode extraction, or OCR text into the imagegen prompt as translation support. Empty or partial extracted text is a prompt-quality issue, not permission to replace the workflow with `pdf2zh` or an external translation model.
+If structured PDF text extraction returns zero blocks, do not switch tools. Use the rendered page image as the primary source, and optionally add plain text, word-mode extraction, or OCR text into the `gpt-image` prompt as translation support. Empty or partial extracted text is a prompt-quality issue, not permission to replace the workflow with `pdf2zh` or an external translation model.
 
 If the page is table-heavy, diagram-heavy, or otherwise dense, prefer this order:
 
@@ -190,7 +225,7 @@ For OCR/translation support on image-only or poorly encoded PDFs:
 
 1. First use the current Codex/ChatGPT visual reading ability on `pages/page-NNN.png`.
 2. If the user has authorized subagents and the page range is large, delegate page groups to Codex child agents. Give each child agent only rendered page images and ask for a compact page brief: visible English OCR, Simplified Chinese translation, terms to preserve, and layout notes. Tell child agents not to call external AI tools or create final images/PDFs.
-3. Save or paste each page brief into the corresponding imagegen prompt. The brief is support material; the final translated page still comes from whole-page imagegen.
+3. Save or paste each page brief into the corresponding `gpt-image` prompt. The brief is support material; the final translated page still comes from whole-page `gpt-image`.
 
 Recommended child-agent brief format:
 
@@ -203,9 +238,9 @@ Layout notes: <headings, tables, callouts, footer/header, dense areas>
 Warnings: <uncertain OCR or text that needs visual review>
 ```
 
-Do not use region overlay, paint-over, background fill boxes, or clone-stamp style text replacement as the default workflow. The user's preferred look is a clean full-page imagegen regeneration followed by deterministic size correction and PDF binding.
+Do not use region overlay, paint-over, background fill boxes, or clone-stamp style text replacement as the default workflow. The user's preferred look is a clean full-page `gpt-image` regeneration followed by deterministic size correction and PDF binding.
 
-When reporting progress to the user, call script steps "PDF page rendering," "dimension normalization," and "PDF binding." Do not call them a script-based translation route, because the translation image is produced by whole-page imagegen.
+When reporting progress to the user, call script steps "PDF page rendering," "dimension normalization," and "PDF binding." Do not call them a script-based translation route, because the translation image is produced by whole-page `gpt-image`.
 
 ## Quality Gates
 
@@ -215,12 +250,15 @@ When reporting progress to the user, call script steps "PDF page rendering," "di
 - Charts, figure labels, table values, citations, and page numbers must remain correct.
 - Output PDF must open and have the expected number of pages.
 - The bilingual comparison PDF must open and have the expected number of pages.
-- Report the work directory, raw imagegen page directory, normalized translated page directory, translated-only PDF path, bilingual comparison PDF path, and any pages that need manual retry.
+- Report the work directory, raw `gpt-image` page directory, normalized translated page directory, translated-only PDF path, bilingual comparison PDF path, and any pages that need manual retry.
+- When available, include `qa-contact-sheet.png` in the reported outputs so the user can quickly scan all translated pages.
 
 ## Script Notes
 
 - `prepare_pdf_pages.py` prefers PyMuPDF (`fitz`) when available. On macOS, it can fall back to the bundled Swift/PDFKit renderer plus `pypdf` text extraction.
-- `normalize_page_images.py` resizes whole-page imagegen outputs back to the original rendered dimensions from `manifest.json`.
+- `run_gpt_image_pages.py` calls the installed `$gpt-image` launcher for each prepared page, defaults to `gpt-image-2`, switches the known general proxy endpoint to the image endpoint, passes a page-matched literal size by default, and resumes by skipping existing `translated_pages_raw/page-NNN.png` files.
+- `normalize_page_images.py` resizes whole-page `gpt-image` outputs back to the original rendered dimensions from `manifest.json`.
 - `merge_page_images_to_pdf.py` uses Pillow to bind normalized page images into a PDF.
 - `build_bilingual_comparison_pdf.py` places each original rendered page and translated page side by side on one PDF page.
+- `make_contact_sheet.py` creates a labeled PNG contact sheet from normalized translated pages for fast visual QA.
 - `audit_translation_package.py` checks image count, dimensions, translated PDF page count, and bilingual PDF page count when `pypdf` is available.
