@@ -186,11 +186,13 @@ Default execution settings:
 
 - Use model `gpt-image-2` unless the user explicitly requests another image model.
 - For the user's proxy image API, set `OPENAI_BASE_URL=https://img.proxy2it.com/v1`; do not use the general chat/API base URL for image generation or image edits when the proxy returns a dedicated image endpoint.
+- If the user provides a bare OpenAI-compatible base URL such as `https://api.example.com`, the runner appends `/v1` before calling `gpt-image`.
 - Use edit mode with the rendered page image as `--image` / reference input, not text-to-image generation.
 - Use `quality=high` for final PDF pages with Chinese text, dense warnings, tables, figures, or small labels.
 - Use a page-matched literal image size by default. Do not let text-heavy PDF pages fall back to the square `1024x1024` CLI default unless the user explicitly asks for a draft.
 - Save raw generated page images to `translated_pages_raw/page-NNN.png`; run dimension normalization before PDF binding.
 - Prefer `scripts/run_gpt_image_pages.py` for normal runs. It invokes the existing `$gpt-image` launcher, exports the image endpoint through `OPENAI_BASE_URL`, writes `gpt_image_run_log.jsonl`, and supports resume-by-skip.
+- `/models` preflight is advisory by default because some proxy domains have incomplete certificate chains or omit image model listings even when actual image edits work. Use `--strict-preflight` only when endpoint validation must be fatal.
 
 ```text
 Use case: text-localization
@@ -256,7 +258,7 @@ When reporting progress to the user, call script steps "PDF page rendering," "di
 ## Script Notes
 
 - `prepare_pdf_pages.py` prefers PyMuPDF (`fitz`) when available. On macOS, it can fall back to the bundled Swift/PDFKit renderer plus `pypdf` text extraction.
-- `run_gpt_image_pages.py` calls the installed `$gpt-image` launcher for each prepared page, defaults to `gpt-image-2`, switches the known general proxy endpoint to the image endpoint, passes a page-matched literal size by default, and resumes by skipping existing `translated_pages_raw/page-NNN.png` files.
+- `run_gpt_image_pages.py` calls the installed `$gpt-image` launcher for each prepared page, defaults to `gpt-image-2`, appends `/v1` to bare compatible base URLs, switches the known general proxy endpoint to the image endpoint, passes a page-matched literal size by default, and resumes by skipping existing `translated_pages_raw/page-NNN.png` files.
 - `normalize_page_images.py` resizes whole-page `gpt-image` outputs back to the original rendered dimensions from `manifest.json`.
 - `merge_page_images_to_pdf.py` uses Pillow to bind normalized page images into a PDF.
 - `build_bilingual_comparison_pdf.py` places each original rendered page and translated page side by side on one PDF page.

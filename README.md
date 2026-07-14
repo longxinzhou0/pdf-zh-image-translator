@@ -23,9 +23,11 @@
 
 - 默认图片模型：`gpt-image-2`
 - 默认图片接口：`https://img.proxy2it.com/v1`
+- 如果传入类似 `https://api.example.com` 的裸域名，runner 会自动补成 `/v1` 接口。
 - 默认质量：`high`
 - 默认按源页面渲染尺寸传入 `gpt-image --size`，避免落回 `1024x1024` 方图导致比例失真。
 - 支持断点续跑：已有 `translated_pages_raw/page-NNN.png` 时会跳过，除非传入 `--force`。
+- `/models` 预检默认只作为提示；部分代理的证书链或模型列表不完整，但实际图片编辑接口仍可用。需要强校验时可加 `--strict-preflight`。
 
 ## 快速使用
 

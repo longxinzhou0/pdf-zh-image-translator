@@ -12,6 +12,7 @@ import sys
 import time
 from pathlib import Path
 from urllib import error, request
+from urllib.parse import urlparse
 
 
 DEFAULT_IMAGE_BASE_URL = "https://img.proxy2it.com/v1"
@@ -44,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help="Regenerate pages even when raw output exists")
     parser.add_argument("--preflight-only", action="store_true", help="Check key, endpoint, and gpt-image launcher only")
     parser.add_argument("--skip-model-check", action="store_true", help="Skip /models endpoint check")
+    parser.add_argument("--strict-preflight", action="store_true", help="Fail when /models preflight cannot be checked")
     parser.add_argument("--timeout", type=int, default=900, help="Per-page gpt-image timeout in seconds")
     return parser.parse_args()
 
@@ -53,6 +55,9 @@ def normalize_base_url(base_url: str) -> str:
     if base == GENERAL_PROXY_BASE_URL:
         print(f"Switching general proxy endpoint to image endpoint: {DEFAULT_IMAGE_BASE_URL}")
         return DEFAULT_IMAGE_BASE_URL
+    parsed = urlparse(base)
+    if parsed.scheme and parsed.netloc and parsed.path in ("", "/"):
+        return f"{base}/v1"
     return base
 
 
@@ -74,7 +79,15 @@ def default_gpt_image_skill_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "gpt-image"
 
 
-def preflight(base_url: str, api_key: str, model: str, launcher: Path, env: dict[str, str], skip_model_check: bool) -> None:
+def preflight(
+    base_url: str,
+    api_key: str,
+    model: str,
+    launcher: Path,
+    env: dict[str, str],
+    skip_model_check: bool,
+    strict_preflight: bool,
+) -> None:
     help_result = subprocess.run(
         [sys.executable, str(launcher), "--help"],
         text=True,
@@ -101,9 +114,17 @@ def preflight(base_url: str, api_key: str, model: str, launcher: Path, env: dict
             payload = json.loads(response.read().decode("utf-8"))
     except error.HTTPError as exc:
         details = exc.read().decode("utf-8", errors="replace")
-        raise SystemExit(f"Image API preflight failed: HTTP {exc.code}\n{details}") from exc
+        message = f"Image API preflight failed: HTTP {exc.code}\n{details}"
+        if strict_preflight:
+            raise SystemExit(message) from exc
+        print(f"Warning: {message}\nContinuing because the actual gpt-image SDK call may still work.")
+        return
     except Exception as exc:
-        raise SystemExit(f"Image API preflight failed: {exc}") from exc
+        message = f"Image API preflight failed: {exc}"
+        if strict_preflight:
+            raise SystemExit(message) from exc
+        print(f"Warning: {message}\nContinuing because the actual gpt-image SDK call may still work.")
+        return
 
     model_ids = {item.get("id") for item in payload.get("data", []) if isinstance(item, dict)}
     if model_ids and model not in model_ids:
@@ -256,7 +277,7 @@ def main() -> int:
     env["OPENAI_API_KEY"] = api_key
     env["OPENAI_BASE_URL"] = base_url
 
-    preflight(base_url, api_key, args.model, launcher, env, args.skip_model_check)
+    preflight(base_url, api_key, args.model, launcher, env, args.skip_model_check, args.strict_preflight)
     if args.preflight_only:
         return 0
 
